@@ -1,5 +1,5 @@
 /* Panel de gestión · front estático sobre Supabase.
-   - Login por link al email (sin contraseñas). Solo entran usuarios cargados en public.acceso.
+   - Login con email y clave (el link de invitación/recuperación sirve para elegirla). Solo entran usuarios cargados en public.acceso.
    - Todo el cálculo vive en la base (funciones SQL); acá solo se muestran resultados y se piden acciones.
    - Los PDF los genera la Edge Function "pdf" con la sesión del usuario. */
 (function () {
@@ -48,11 +48,19 @@
 
   /* ---------- login ---------- */
   function pantallaLogin(aviso) {
-    $app.innerHTML = '<div class="login card"><h1>Panel de gestión</h1><p class="sub">Ingresá con tu email. Te mandamos un link para entrar, sin contraseña.</p>' +
+    $app.innerHTML = '<div class="login card"><h1>Panel de gestión</h1><p class="sub">Ingresá con tu email y tu clave.</p>' +
       (aviso ? '<div class="banner ' + (aviso.mal ? "bad" : "") + '">' + esc(aviso.texto) + "</div>" : "") +
-      '<form id="f-login"><label class="f"><span>Email</span><input id="lg-email" type="email" autocomplete="email" required></label>' +
-      '<div class="actions"><button class="btn primary" type="submit">Enviarme el link</button></div></form>' +
-      '<p class="help">Solo pueden entrar las personas autorizadas. Si no te llega el correo, revisá spam.</p></div>';
+      '<form id="f-login"><label class="f"><span>Email</span><input id="lg-email" type="email" autocomplete="username" required></label>' +
+      '<label class="f"><span>Clave</span><input id="lg-pass" type="password" autocomplete="current-password" required></label>' +
+      '<div class="actions"><button class="btn primary" type="submit">Entrar</button> <button class="btn" type="button" data-act="link">Olvidé mi clave / entrar con link</button></div></form>' +
+      '<p class="help">Solo pueden entrar las personas autorizadas. El link llega por email; si no aparece, revisá spam.</p></div>';
+  }
+  function pantallaClave(aviso) {
+    $app.innerHTML = '<div class="login card"><h1>Elegí tu clave</h1><p class="sub">Definí la clave con la que vas a entrar al panel (mínimo 10 caracteres).</p>' +
+      (aviso ? '<div class="banner ' + (aviso.mal ? "bad" : "") + '">' + esc(aviso.texto) + "</div>" : "") +
+      '<form id="f-clave"><label class="f"><span>Clave nueva</span><input id="cl-1" type="password" autocomplete="new-password" minlength="10" required></label>' +
+      '<label class="f"><span>Repetila</span><input id="cl-2" type="password" autocomplete="new-password" minlength="10" required></label>' +
+      '<div class="actions"><button class="btn primary" type="submit">Guardar clave</button></div></form></div>';
   }
   async function pedirLink(email) {
     var r = await sb.auth.signInWithOtp({ email: email, options: { shouldCreateUser: false, emailRedirectTo: location.origin + location.pathname } });
@@ -60,9 +68,12 @@
   }
 
   /* ---------- arranque ---------- */
+  // El link de invitación / recuperación trae type=invite|recovery en la URL: hay que elegir clave antes de entrar.
+  var VIENE_DE_INVITACION = /type=(invite|recovery)/.test(location.hash + location.search);
   async function iniciar() {
     var ses = (await sb.auth.getSession()).data.session;
     if (!ses) { pantallaLogin(); return; }
+    if (VIENE_DE_INVITACION) { pantallaClave(); return; }
     var ok = await sb.rpc("es_autorizado");
     if (ok.error || ok.data !== true) {
       $app.innerHTML = '<div class="login card"><h1>Sin acceso</h1><p>Este usuario (' + esc(ses.user.email) + ') todavía no está autorizado. Pedile a quien administra el panel que lo habilite.</p><div class="actions"><button class="btn" data-act="salir">Salir</button></div></div>';
@@ -275,6 +286,13 @@
     var a = b.dataset.act;
     try {
       if (a === "salir") { e.preventDefault(); await sb.auth.signOut(); }
+      else if (a === "link") {
+        var em2 = ($("#lg-email") || {}).value; em2 = (em2 || "").trim();
+        if (!em2) return toast("Escribí tu email arriba y volvé a tocar.");
+        var rr = await sb.auth.resetPasswordForEmail(em2, { redirectTo: location.origin + location.pathname });
+        if (rr.error) throw rr.error;
+        pantallaLogin({ texto: "Listo: si ese email está autorizado, te llegó un link para elegir una clave nueva. Abrilo desde este mismo dispositivo." });
+      }
       else if (a === "tab") { S.tab = b.dataset.k; S.pdfLink = null; pintarTabs(); await vista(); }
       else if (a === "sem-prev") { S.lunes = addDays(S.lunes, -7); S.pdfLink = null; await vista(); }
       else if (a === "sem-next") { S.lunes = addDays(S.lunes, 7); S.pdfLink = null; await vista(); }
@@ -302,8 +320,17 @@
     e.preventDefault(); var f = e.target;
     try {
       if (f.id === "f-login") {
-        var em = $("#lg-email").value.trim(); await pedirLink(em);
-        pantallaLogin({ texto: "Listo: si ese email está autorizado, te llegó un link. Abrilo desde este mismo dispositivo." });
+        var em = $("#lg-email").value.trim();
+        var rl = await sb.auth.signInWithPassword({ email: em, password: $("#lg-pass").value });
+        if (rl.error) { pantallaLogin({ mal: true, texto: "Email o clave incorrectos." }); return; }
+        S.user = null; await iniciar();
+      } else if (f.id === "f-clave") {
+        var c1 = $("#cl-1").value, c2 = $("#cl-2").value;
+        if (c1 !== c2) { pantallaClave({ mal: true, texto: "Las dos claves no coinciden." }); return; }
+        var ru = await sb.auth.updateUser({ password: c1 });
+        if (ru.error) { pantallaClave({ mal: true, texto: ru.error.message }); return; }
+        VIENE_DE_INVITACION = false; history.replaceState(null, "", location.pathname);
+        S.user = null; await iniciar();
       } else if (f.id === "f-parte") {
         var esp = $("#pa-esp").value; if (!esp) return toast("Elegí con qué especialidad se imputa.");
         await q(sb.rpc("cargar_parte", { p_fecha: $("#pa-fecha").value, p_personal: $("#pa-per").value, p_obra: $("#pa-obra").value, p_esp: esp, p_horas: num($("#pa-hs").value), p_tipo: $("#pa-tipo").value, p_obs: $("#pa-obs").value.trim() || null }));
