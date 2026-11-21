@@ -94,8 +94,16 @@ tfoot td{font-weight:700;border-top:2px solid var(--ink)}
 .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
 
 /* cotización */
-.item{display:grid;grid-template-columns:130px minmax(0,1fr) 70px 110px 36px;gap:6px;margin-bottom:6px;align-items:center}
-@media(max-width:640px){.item{grid-template-columns:minmax(0,1fr) 70px 100px 36px}.item select{grid-column:1/-1}}
+.item{display:grid;grid-template-columns:128px minmax(0,1fr) 66px 62px 104px 100px 36px;gap:6px;margin-bottom:6px;align-items:center}
+.item-cab{margin-bottom:2px;font-weight:600}
+@media(max-width:860px){
+  .item{grid-template-columns:repeat(4,minmax(0,1fr)) 36px;grid-template-areas:"tipo tipo opc opc del" "desc desc desc desc desc" "cant uni pre pre pre"}
+  .item [data-f="tipo"]{grid-area:tipo} .item [data-f="opcion"]{grid-area:opc} .item button{grid-area:del}
+  .item [data-f="descripcion"]{grid-area:desc} .item [data-f="cantidad"]{grid-area:cant} .item [data-f="unidad"]{grid-area:uni} .item [data-f="precio_unitario"]{grid-area:pre}
+  .item-cab{display:none}
+  .item{padding:8px;border:1px solid var(--line);border-radius:10px}
+}
+details summary{cursor:pointer;font-weight:600;font-size:.92rem}
 .totals{margin-top:14px;border-top:2px solid var(--ink);padding-top:10px;display:grid;gap:5px;font-variant-numeric:tabular-nums}
 .totals div{display:flex;justify-content:space-between;gap:12px}
 .totals .big{font:700 1.3rem var(--head);color:var(--accent)}

@@ -32,8 +32,16 @@
   function q(p) { return p.then(function (r) { if (r.error) throw r.error; return r.data; }); }
   function msg(e) { return (e && (e.message || e.error_description)) || String(e); }
 
-  /* totales de una cotización (misma regla que la función SQL cot_totales) */
-  function totales(c, items) {
+  /* totales de una cotización (misma regla que la función SQL cot_totales): renglones comunes + los de la opción pedida
+     (por defecto, la primera opción que aparezca) */
+  function opcionesDe(items) {
+    var ns = [];
+    items.forEach(function (i) { var n = Number(i.opcion); if (n > 0 && ns.indexOf(n) < 0) ns.push(n); });
+    return ns.sort(function (a, b) { return a - b; });
+  }
+  function totales(c, items, opcion) {
+    var ns = opcionesDe(items), op = opcion != null ? opcion : (ns.length ? ns[0] : null);
+    items = items.filter(function (i) { return !(Number(i.opcion) > 0) || Number(i.opcion) === op; });
     var s = function (t) { return r2(items.filter(function (i) { return i.tipo === t; }).reduce(function (a, i) { return a + Number(i.cantidad) * Number(i.precio_unitario); }, 0)); };
     var mo = s("mo"), mat = s("mat"), sub = r2(mo + mat);
     var iva = c.discrimina_iva ? r2(sub * Number(c.iva_pct) / 100) : 0;
@@ -180,20 +188,28 @@
   }
 
   /* ---------- COTIZACIONES ---------- */
+  function itemNuevo() { return { tipo: "mo", descripcion: "", cantidad: 1, unidad: "u", precio_unitario: 0, opcion: "" }; }
   function itemsHtml() {
-    return S.itemsCot.map(function (it, i) {
+    var cab = '<div class="item item-cab muted small"><span>Tipo</span><span>Descripción</span><span>Cant.</span><span>Unidad</span><span>Precio unit.</span><span>Opción</span><span></span></div>';
+    return cab + S.itemsCot.map(function (it, i) {
+      var opt = function (v, l) { return '<option value="' + v + '"' + (String(it.opcion || "") === v ? " selected" : "") + ">" + l + "</option>"; };
       return '<div class="item"><select data-f="tipo" data-i="' + i + '" aria-label="Tipo"><option value="mo"' + (it.tipo === "mo" ? " selected" : "") + '>Mano de obra</option><option value="mat"' + (it.tipo === "mat" ? " selected" : "") + '>Material</option><option value="gar"' + (it.tipo === "gar" ? " selected" : "") + ">Garantía (sin costo)</option></select>" +
-        '<input data-f="descripcion" data-i="' + i + '" value="' + esc(it.descripcion) + '" placeholder="Descripción"><input data-f="cantidad" data-i="' + i + '" type="number" step="any" min="0" value="' + it.cantidad + '">' +
-        '<input data-f="precio_unitario" data-i="' + i + '" type="number" step="any" min="0" value="' + (it.tipo === "gar" ? 0 : it.precio_unitario) + '"' + (it.tipo === "gar" ? " disabled" : "") + '><button class="btn small danger" data-act="item-del" data-i="' + i + '" aria-label="Quitar">×</button></div>';
-    }).join("");
+        '<input data-f="descripcion" data-i="' + i + '" value="' + esc(it.descripcion) + '" placeholder="Descripción" aria-label="Descripción"><input data-f="cantidad" data-i="' + i + '" type="number" step="any" min="0" value="' + it.cantidad + '" aria-label="Cantidad">' +
+        '<input data-f="unidad" data-i="' + i + '" list="dl-uni" value="' + esc(it.unidad || "u") + '" aria-label="Unidad">' +
+        '<input data-f="precio_unitario" data-i="' + i + '" type="number" step="any" min="0" value="' + (it.tipo === "gar" ? 0 : it.precio_unitario) + '"' + (it.tipo === "gar" ? " disabled" : "") + ' aria-label="Precio unitario">' +
+        '<select data-f="opcion" data-i="' + i + '" aria-label="Opción">' + opt("", "Común") + opt("1", "Opción 1") + opt("2", "Opción 2") + opt("3", "Opción 3") + "</select>" +
+        '<button class="btn small danger" data-act="item-del" data-i="' + i + '" aria-label="Quitar">×</button></div>';
+    }).join("") + '<datalist id="dl-uni"><option value="u"><option value="m²"><option value="m"><option value="ml"><option value="m³"><option value="hs"><option value="gl"><option value="kg"></datalist>';
   }
   async function vCot() {
     var r = await Promise.all([
       q(sb.from("cotizaciones").select("id,numero,tipo,fecha,estado,descripcion,discrimina_iva,iva_pct,clientes(nombre)").order("fecha", { ascending: false }).order("numero", { ascending: false }).limit(300)),
-      q(sb.from("cotizacion_items").select("cotizacion_id,tipo,cantidad,precio_unitario").limit(5000)),
+      q(sb.from("cotizacion_items").select("cotizacion_id,tipo,cantidad,precio_unitario,opcion").limit(5000)),
       S.nuevaCot ? q(sb.from("clientes").select("nombre").order("nombre")) : Promise.resolve([]),
+      S.nuevaCot ? q(sb.from("config").select("valor").eq("clave", "empresa")) : Promise.resolve([]),
     ]);
     var cots = r[0], items = r[1];
+    if (r[3] && r[3][0]) S.vendedor = (r[3][0].valor || {}).vendedor || "";
     var filas = cots.map(function (c) {
       var t = totales(c, items.filter(function (i) { return i.cotizacion_id === c.id; }));
       return "<tr><td>" + esc(c.numero) + "</td><td>" + fdate(c.fecha) + "</td><td>" + esc((c.clientes || {}).nombre || "—") + (c.tipo === "trabajo" ? ' <span class="pill">trabajo realizado</span>' : "") + '<br><span class="muted small">' + esc(String(c.descripcion || "").slice(0, 90)) + '</span></td><td><span class="pill ' + (c.estado === "enviada" || c.estado === "emitida" ? "ok" : "warn") + '">' + esc(c.estado) + '</span></td><td class="n">' + money(t.total) + '</td><td class="n"><button class="btn small" data-act="pdf-cot" data-id="' + c.id + '">PDF</button></td></tr>';
@@ -202,12 +218,18 @@
     if (S.nuevaCot) {
       form = '<section class="card"><h2>Nueva cotización</h2><form id="f-cot"><div class="row"><label class="f"><span>Documento</span><select id="ct-tipo"><option value="cotizacion">Cotización</option><option value="trabajo">Trabajo realizado</option></select></label>' +
         '<label class="f"><span>Cliente</span><input id="ct-cliente" list="dl-cli" required autocomplete="off"></label><datalist id="dl-cli">' + r[2].map(function (c) { return '<option value="' + esc(c.nombre) + '">'; }).join("") + "</datalist>" +
-        '<label class="f"><span>Obra o dirección</span><input id="ct-obra"></label><label class="f sm"><span>Validez (días)</span><input id="ct-validez" type="number" min="0" value="7"></label></div>' +
+        '<label class="f"><span>Obra o dirección</span><input id="ct-obra"></label><label class="f sm"><span>Validez (días)</span><input id="ct-validez" type="number" min="0" value="15"></label></div>' +
+        '<div class="row" style="margin-top:10px"><label class="f"><span>Condición</span><input id="ct-condicion" list="dl-cond" placeholder="Ej: Consumidor final — precio final cerrado"></label><datalist id="dl-cond"><option value="Consumidor final — precio final cerrado"><option value="Responsable inscripto"></datalist>' +
+        '<label class="f"><span>Rubros (encabezado)</span><input id="ct-rubros" placeholder="Ej: Pintura · Revoque · Electricidad"></label><label class="f sm"><span>Vendedor</span><input id="ct-vendedor" placeholder="' + esc(S.vendedor || "") + '"></label></div>' +
         '<label class="f" style="margin-top:10px"><span>Trabajo a realizar</span><textarea id="ct-desc"></textarea></label><h3 style="margin-top:12px">Ítems</h3><div id="ct-items">' + itemsHtml() + "</div>" +
         '<div class="actions" style="margin-top:6px"><button type="button" class="btn small" data-act="item-add">+ Ítem</button></div>' +
-        '<div class="row" style="margin-top:12px"><label class="chk"><input id="ct-detalle" type="checkbox"> Mostrar cada ítem (si no, solo "Mano de obra" y "Materiales")</label><label class="chk"><input id="ct-iva" type="checkbox"> Discriminar IVA</label>' +
+        '<details style="margin-top:12px"><summary>Opciones a elegir (solo si algún ítem es "Opción 1/2/3")</summary><p class="help">Los ítems "Común" van en todas. Cada opción suma los comunes más los suyos. La primera es la que figura como total.</p>' +
+        [1, 2, 3].map(function (n) { return '<div class="row"><label class="f"><span>Título opción ' + n + '</span><input id="ct-op' + n + '-t" placeholder="' + (n === 1 ? "OPCIÓN 1 (recomendada)" : n === 2 ? "OPCIÓN 2 (económica)" : "OPCIÓN 3") + '"></label><label class="f"><span>Qué incluye</span><input id="ct-op' + n + '-d"></label></div>'; }).join("") + "</details>" +
+        '<div class="row" style="margin-top:12px"><label class="chk"><input id="ct-detalle" type="checkbox" checked> Mostrar cada ítem (si no, solo "Mano de obra" y "Materiales")</label><label class="chk"><input id="ct-iva" type="checkbox"> Discriminar IVA</label>' +
         '<label class="f sm"><span>IVA %</span><input id="ct-ivapct" type="number" step="any" value="21"></label><label class="chk"><input id="ct-transf" type="checkbox" checked> Mostrar datos de transferencia</label></div>' +
-        '<label class="f" style="margin-top:10px"><span>Notas</span><textarea id="ct-notas"></textarea></label><div id="ct-totales" class="totals"></div>' +
+        '<label class="f" style="margin-top:10px"><span>Nota bajo la tabla</span><textarea id="ct-notas" placeholder="Ej: Pintura: valor de lista $16.000/m² con 37,5% de descuento"></textarea></label>' +
+        '<label class="f" style="margin-top:10px"><span>Condiciones (una por renglón)</span><textarea id="ct-conds" placeholder="Trabajos de mano de obra: no incluyen materiales."></textarea></label>' +
+        '<label class="f" style="margin-top:10px"><span>Frase de cierre</span><input id="ct-cierre" placeholder="En trabajos realizados: Trabajo finalizado a conformidad del cliente."></label><div id="ct-totales" class="totals"></div>' +
         '<div class="actions"><button class="btn primary" type="submit">Guardar y generar PDF</button><button type="button" class="btn" data-act="cot-cancel">Cancelar</button></div></form></section>';
     }
     return (S.nuevaCot ? form : '<div class="actions" style="margin:0 0 12px"><button class="btn primary" data-act="cot-nueva">+ Nueva cotización</button></div>') + linkPdf() +
@@ -222,9 +244,11 @@
   function refrescarTotalesCot() {
     if (!$("#ct-totales")) return;
     leerItems();
-    var t = totales({ discrimina_iva: $("#ct-iva").checked, iva_pct: num($("#ct-ivapct").value) }, S.itemsCot);
+    var c = { discrimina_iva: $("#ct-iva").checked, iva_pct: num($("#ct-ivapct").value) }, ns = opcionesDe(S.itemsCot);
+    var t = totales(c, S.itemsCot);
+    var ops = ns.length > 1 ? ns.map(function (n) { return "<div><span>" + esc(($("#ct-op" + n + "-t") || {}).value || "Opción " + n) + "</span><span>" + money(totales(c, S.itemsCot, n).total) + "</span></div>"; }).join("") : "";
     $("#ct-totales").innerHTML = "<div><span>Mano de obra</span><span>" + money(t.mo) + "</span></div><div><span>Materiales</span><span>" + money(t.mat) + "</span></div>" +
-      ($("#ct-iva").checked ? "<div><span>IVA</span><span>" + money(t.iva) + "</span></div>" : "") + '<div class="big"><span>Total</span><span>' + money(t.total) + "</span></div>";
+      ($("#ct-iva").checked ? "<div><span>IVA</span><span>" + money(t.iva) + "</span></div>" : "") + ops + '<div class="big"><span>Total' + (ns.length > 1 ? " (opción " + ns[0] + ")" : "") + "</span><span>" + money(t.total) + "</span></div>";
   }
   async function guardarCot() {
     leerItems();
@@ -235,10 +259,13 @@
     var clis = await q(sb.from("clientes").select("id,nombre")), cli = clis.filter(function (c) { return norm(c.nombre) === norm(cliente); })[0];
     if (!cli) cli = await q(sb.from("clientes").insert({ nombre: cliente }).select("id").single());
     var numero = await q(sb.rpc("siguiente_numero", { p_tipo: tipo }));
-    var cot = await q(sb.from("cotizaciones").insert({ numero: numero, tipo: tipo, cliente_id: cli.id, obra_texto: $("#ct-obra").value.trim() || null, descripcion: $("#ct-desc").value.trim() || null,
+    var val = function (id) { return ($(id).value || "").trim() || null; };
+    var opciones = opcionesDe(items).map(function (n) { return { n: n, titulo: val("#ct-op" + n + "-t") || "Opción " + n, descripcion: val("#ct-op" + n + "-d") || "" }; });
+    var cot = await q(sb.from("cotizaciones").insert({ numero: numero, tipo: tipo, cliente_id: cli.id, obra_texto: val("#ct-obra"), descripcion: val("#ct-desc"),
       detalle: $("#ct-detalle").checked, discrimina_iva: $("#ct-iva").checked, iva_pct: num($("#ct-ivapct").value) || 21, validez_dias: Math.round(num($("#ct-validez").value)),
-      transferencia: $("#ct-transf").checked, notas: $("#ct-notas").value.trim() || null, estado: "emitida" }).select("id,numero").single());
-    await q(sb.from("cotizacion_items").insert(items.map(function (i) { return { cotizacion_id: cot.id, tipo: i.tipo, descripcion: i.descripcion.trim(), cantidad: i.cantidad || 1, precio_unitario: i.tipo === "gar" ? 0 : i.precio_unitario }; })));
+      transferencia: $("#ct-transf").checked, notas: val("#ct-notas"), estado: "emitida",
+      condicion: val("#ct-condicion"), rubros: val("#ct-rubros"), vendedor: val("#ct-vendedor"), condiciones: val("#ct-conds"), cierre: val("#ct-cierre"), opciones: opciones }).select("id,numero").single());
+    await q(sb.from("cotizacion_items").insert(items.map(function (i, k) { return { cotizacion_id: cot.id, tipo: i.tipo, descripcion: i.descripcion.trim(), cantidad: i.cantidad || 1, precio_unitario: i.tipo === "gar" ? 0 : i.precio_unitario, unidad: String(i.unidad || "u").trim() || "u", opcion: Number(i.opcion) > 0 ? Number(i.opcion) : null, orden: k }; })));
     S.nuevaCot = false; S.itemsCot = [];
     toast("Guardada como " + cot.numero + ".");
     await generarPdf({ tipo: "cotizacion", id: cot.id }, "Cotización " + cot.numero);
@@ -299,17 +326,17 @@
       else if (a === "sem-cerrar") twice(b, async function () { try { await q(sb.rpc("cerrar_semana", { p_lunes: S.lunes })); toast("Semana cerrada y adelantos saldados."); await vista(); } catch (er) { toast("No se pudo cerrar: " + msg(er)); } });
       else if (a === "recibo") await generarPdf({ tipo: "recibo", pago_id: b.dataset.pago, personal_id: b.dataset.per }, "Comprobante de pago");
       else if (a === "anular") twice(b, async function () { try { await q(sb.rpc("anular_parte", { p_id: b.dataset.id })); toast("Parte anulado."); await vista(); } catch (er) { toast("No se pudo anular: " + msg(er)); } });
-      else if (a === "cot-nueva") { S.nuevaCot = true; S.itemsCot = [{ tipo: "mo", descripcion: "", cantidad: 1, precio_unitario: 0 }]; await vista(); }
+      else if (a === "cot-nueva") { S.nuevaCot = true; S.itemsCot = [itemNuevo()]; await vista(); }
       else if (a === "cot-cancel") { S.nuevaCot = false; await vista(); }
-      else if (a === "item-add") { leerItems(); S.itemsCot.push({ tipo: "mo", descripcion: "", cantidad: 1, precio_unitario: 0 }); $("#ct-items").innerHTML = itemsHtml(); refrescarTotalesCot(); }
-      else if (a === "item-del") { leerItems(); S.itemsCot.splice(+b.dataset.i, 1); if (!S.itemsCot.length) S.itemsCot.push({ tipo: "mo", descripcion: "", cantidad: 1, precio_unitario: 0 }); $("#ct-items").innerHTML = itemsHtml(); refrescarTotalesCot(); }
+      else if (a === "item-add") { leerItems(); S.itemsCot.push(itemNuevo()); $("#ct-items").innerHTML = itemsHtml(); refrescarTotalesCot(); }
+      else if (a === "item-del") { leerItems(); S.itemsCot.splice(+b.dataset.i, 1); if (!S.itemsCot.length) S.itemsCot.push(itemNuevo()); $("#ct-items").innerHTML = itemsHtml(); refrescarTotalesCot(); }
       else if (a === "pdf-cot") await generarPdf({ tipo: "cotizacion", id: b.dataset.id }, "Cotización");
     } catch (er) { toast("Error: " + msg(er)); }
   });
   document.addEventListener("input", function (e) {
     var el = e.target;
     if (S.tab === "partes" && el.closest("#f-parte")) refrescarParte();
-    if (S.tab === "cot" && (el.closest("#ct-items") || /^ct-(iva|ivapct)$/.test(el.id))) refrescarTotalesCot();
+    if (S.tab === "cot" && (el.closest("#ct-items") || /^ct-(iva|ivapct|op[123]-t)$/.test(el.id))) refrescarTotalesCot();
   });
   document.addEventListener("change", async function (e) {
     var el = e.target;
